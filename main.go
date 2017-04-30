@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"math"
 	"os"
 	"strconv"
@@ -12,7 +11,7 @@ import (
 	"time"
 )
 
-// Train type represents train object with set id, speed, pasengers capacity,
+// Train type represents train object with set id, speed, pasangers capacity,
 // route marked by switches, also saves current switch index and position.
 type Train struct {
 	id, maxSpeed, capacity int
@@ -31,18 +30,17 @@ func (t *Train) String() string {
 
 // Run is main Train function, that moves train on it's route
 func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, group *sync.WaitGroup) {
+	defer group.Done()
 	// place train on first Switch in route
 	<-t.route[t.routeIndex].lock
 	t.position = t.route[t.routeIndex]
 	time := simulationNow()
-	waitTime := t.position.waitTime(t)
 	writeStat(fmt.Sprintf("%s %s enters %s\n", time, t.String(), t.position.String()))
 	if printInformation {
-		fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
+		fmt.Printf("%s\t%s starts from %s\n",
 			time,
 			t.String(),
-			t.position.String(),
-			waitTime)
+			t.position.String())
 	}
 	// then in infinite loop move it onto rail, switch, rail, switch ...
 	for {
@@ -124,7 +122,7 @@ func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, group *sync.W
 	}
 }
 
-// simulates clock in simulation time
+// simulates clock in simulation time in format HH:MM
 func simulationNow() string {
 	// get duration from simulation start
 	d := time.Since(startTime)
@@ -230,12 +228,6 @@ func (r *Rail) String() string     { return "Rail" + strconv.Itoa(r.id) }
 func (p *Platform) String() string { return "Platform" + strconv.Itoa(p.id) }
 func (s *Switch) String() string   { return "Switch" + strconv.Itoa(s.id) }
 
-func check(e error) {
-	if e != nil {
-		panic(e)
-	}
-}
-
 // informant id function for goiroutine that communicates with user
 func informant(group *sync.WaitGroup, trains []*Train) {
 	defer group.Done()
@@ -246,8 +238,7 @@ func informant(group *sync.WaitGroup, trains []*Train) {
 	for {
 		fmt.Printf("%s: ", s)
 
-		response, err := reader.ReadString('\n')
-		check(err)
+		response, _ := reader.ReadString('\n')
 
 		switch strings.ToLower(response)[0] {
 		case 'i':
@@ -288,36 +279,41 @@ func main() {
 		os.Exit(1)
 	} else {
 		filename = os.Args[1]
-		v, err := strconv.ParseBool(os.Args[2])
-		printInformation = v
-		check(err)
+		b, err := strconv.ParseBool(os.Args[2])
+		if err != nil {
+			fmt.Println("second argument must be boolean")
+			os.Exit(1)
+		}
+		printInformation = b
 	}
 
 	// create file for statistics, create writer
 	f, err := os.Create("stats")
-	check(err)
+	if err != nil {
+		panic(err)
+	}
 	stat = bufio.NewWriter(f)
 
 	// open file in railway data, create scanner
 	data, err := os.Open(filename)
-	check(err)
+	if err != nil {
+		panic(err)
+	}
 	scanner := bufio.NewScanner(data)
 	scanner.Scan()
 	line := scanner.Text()
 	fields := strings.Fields(line)
 
 	// s - number of Switches defined
-	s, err := strconv.Atoi(fields[0])
+	s, _ := strconv.Atoi(fields[0])
 	// p - number of Platforms defined
-	p, err := strconv.Atoi(fields[1])
+	p, _ := strconv.Atoi(fields[1])
 	// r - number of Rails defined
-	r, err := strconv.Atoi(fields[2])
+	r, _ := strconv.Atoi(fields[2])
 	// t - number of Trains defined
-	t, err := strconv.Atoi(fields[3])
+	t, _ := strconv.Atoi(fields[3])
 	// hour - number of seconds for hour simulation
-	hour, err := strconv.Atoi(fields[4])
-
-	check(err)
+	hour, _ := strconv.Atoi(fields[4])
 
 	secondsInHour = hour
 
@@ -342,10 +338,8 @@ func main() {
 		line = scanner.Text()
 		fields = strings.Fields(line)
 
-		id, err := strconv.Atoi(fields[0])
-		time, err := strconv.Atoi(fields[1])
-
-		check(err)
+		id, _ := strconv.Atoi(fields[0])
+		time, _ := strconv.Atoi(fields[1])
 
 		switches[i] = &Switch{id: id, rotationTime: time, lock: make(chan int, 1)}
 		switches[i].lock <- 1
@@ -356,12 +350,10 @@ func main() {
 		line = scanner.Text()
 		fields = strings.Fields(line)
 
-		id, err := strconv.Atoi(fields[0])
-		time, err := strconv.Atoi(fields[1])
-		from, err := strconv.Atoi(fields[2])
-		to, err := strconv.Atoi(fields[3])
-
-		check(err)
+		id, _ := strconv.Atoi(fields[0])
+		time, _ := strconv.Atoi(fields[1])
+		from, _ := strconv.Atoi(fields[2])
+		to, _ := strconv.Atoi(fields[3])
 
 		platform := &Platform{id: id, stopTime: time, lock: make(chan int, 1)}
 		platform.lock <- 1
@@ -376,13 +368,11 @@ func main() {
 		line = scanner.Text()
 		fields = strings.Fields(line)
 
-		id, err := strconv.Atoi(fields[0])
-		len, err := strconv.Atoi(fields[1])
-		speed, err := strconv.Atoi(fields[2])
-		from, err := strconv.Atoi(fields[3])
-		to, err := strconv.Atoi(fields[4])
-
-		check(err)
+		id, _ := strconv.Atoi(fields[0])
+		len, _ := strconv.Atoi(fields[1])
+		speed, _ := strconv.Atoi(fields[2])
+		from, _ := strconv.Atoi(fields[3])
+		to, _ := strconv.Atoi(fields[4])
 
 		rail := &Rail{id: id, len: len, speedLimit: speed, lock: make(chan int, 1)}
 		rail.lock <- 1
@@ -390,9 +380,6 @@ func main() {
 		railway[from][to] = append(railway[from][to], rail)
 		railway[to][from] = append(railway[to][from], rail)
 	}
-
-	// set logger to append time to logs
-	log.SetFlags(log.Ltime)
 
 	// create WaitGroup that will make sure program will not end before trains stop (which they never do)
 	waitGroup := new(sync.WaitGroup)
@@ -404,14 +391,12 @@ func main() {
 		line = scanner.Text()
 		fields = strings.Fields(line)
 
-		id, err := strconv.Atoi(fields[0])
-		speed, err := strconv.Atoi(fields[1])
-		capacity, err := strconv.Atoi(fields[2])
-		routeLen, err := strconv.Atoi(fields[3])
+		id, _ := strconv.Atoi(fields[0])
+		speed, _ := strconv.Atoi(fields[1])
+		capacity, _ := strconv.Atoi(fields[2])
+		routeLen, _ := strconv.Atoi(fields[3])
 
-		check(err)
-
-		trains[i] = &Train{id, speed, capacity, []*Switch{}, 0, nil}
+		trains[i] = &Train{id, speed, capacity, make([]*Switch, routeLen), 0, nil}
 
 		scanner.Scan()
 		line = scanner.Text()
@@ -419,11 +404,9 @@ func main() {
 
 		// read trains route and create it
 		for j := 0; j < routeLen; j++ {
-			index, err := strconv.Atoi(fields[j])
+			index, _ := strconv.Atoi(fields[j])
 
-			check(err)
-
-			trains[i].route = append(trains[i].route, switches[index])
+			trains[i].route[j] = switches[index]
 		}
 
 		go trains[i].Run(&switches, &railway, waitGroup)

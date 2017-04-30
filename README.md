@@ -12,7 +12,8 @@ case "1", "t", "T", "true", "TRUE", "True":
     return true, nil
 case "0", "f", "F", "false", "FALSE", "False":
     return false, nil
-}```
+}
+```
 
 # PLIK KONFIGURACYJNY #
 
@@ -35,8 +36,8 @@ W kolejnych liniach pliku tekstowego znajdują się:
     - `id`: identyfikator toru
     - `len`: długość toru w _km_
     - `speed`: maksymalna prędkość pociągów na torze w _km/h_
-    - `from`: identyfikator zwrotnicy, od której biegnie peron
-    - `to`: identyfikator zwrotnicy, do której biegnie peron
+    - `from`: identyfikator zwrotnicy, od której biegnie tor
+    - `to`: identyfikator zwrotnicy, do której biegnie tor
 - `t` __dwulinijkowych__ opisów kolejnych pociągów w formacie:
     - pierwsza linia postaci `id speed cap len`, gdzie:
         - `id`: identyfikator pociągu
