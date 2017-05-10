@@ -1,3 +1,5 @@
+// Author: Magdalena Oska 221492
+
 package main
 
 import (
@@ -18,6 +20,7 @@ type Train struct {
 	route                  []*Switch
 	routeIndex             int
 	position               BasicRail
+	offTrack               chan bool
 }
 
 func (t *Train) wait(s float64) {
@@ -32,16 +35,10 @@ func (t *Train) String() string {
 func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, group *sync.WaitGroup) {
 	defer group.Done()
 	// place train on first Switch in route
-	<-t.route[t.routeIndex].lock
 	t.position = t.route[t.routeIndex]
-	time := simulationNow()
-	writeStat(fmt.Sprintf("%s %s enters %s\n", time, t.String(), t.position.String()))
-	if printInformation {
-		fmt.Printf("%s\t%s starts from %s\n",
-			time,
-			t.String(),
-			t.position.String())
-	}
+	t.route[t.routeIndex].userTrain <- t
+	<-t.offTrack
+	<-t.route[t.routeIndex].readyToGo
 	// then in infinite loop move it onto rail, switch, rail, switch ...
 	for {
 		// get id of switch that is before the rail we have to get on
@@ -54,71 +51,33 @@ func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, group *sync.W
 			// loop all rails between switches got above
 			for _, r := range (*railway)[from][to] {
 				// try to move onto rail, that is lock it
-				switch r.tryLock() {
-				case true:
-					// if we got lock
-					// unlock last position
-					t.position.unlock()
-					// get current time
-					time := simulationNow()
-					writeStat(fmt.Sprintf("%s %s leaves %s\n", time, t.String(), t.position.String()))
-					// move train to new position (rail)
-					t.position = r
-					writeStat(fmt.Sprintf("%s %s enters %s\n", time, t.String(), t.position.String()))
-					// calculate time we have to wait
-					waitTime := t.position.waitTime(t)
-					if printInformation {
-						fmt.Printf("%s\t%s is on %s for next %.2fh\n",
-							time,
-							t.String(),
-							t.position.String(),
-							waitTime)
+				switch r.(type) {
+				case *Rail:
+					r := r.(*Rail)
+					select {
+					case r.userTrain <- t:
+						<-r.readyToGo
+						break FindRail
+					default:
+						continue
 					}
-					// pause goroutine for calculated time
-					t.wait(waitTime)
-					// free rail was found, break from loop
-					break FindRail
-				case false:
-					// if rail was occupied try next one
-					continue
+				case *Platform:
+					r := r.(*Platform)
+					select {
+					case r.userTrain <- t:
+						<-r.readyToGo
+						break FindRail
+					default:
+						continue
+					}
 				}
 			}
 		}
 		// we have to change route index (switch)
 		t.routeIndex = (t.routeIndex + 1) % len(t.route)
-	LockSwitch:
-		// loop until we move onto next switch as it can be occupied
-		for {
-			// try to move onto switch at routeIndex
-			switch t.route[t.routeIndex].tryLock() {
-			case true:
-				// if we got lock
-				// unlock last position
-				t.position.unlock()
-				// get current time
-				time := simulationNow()
-				writeStat(fmt.Sprintf("%s %s leaves %s\n", time, t.String(), t.position.String()))
-				// move train to new position (switch)
-				t.position = t.route[t.routeIndex]
-				writeStat(fmt.Sprintf("%s %s enters %s\n", time, t.String(), t.position.String()))
-				// calculate time we have to wait
-				waitTime := t.position.waitTime(t)
-				if printInformation {
-					fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
-						time,
-						t.String(),
-						t.position.String(),
-						waitTime)
-				}
-				// pause goroutine for calculated time
-				t.wait(waitTime)
-				// we moved to next switch, break from loop
-				break LockSwitch
-			case false:
-				// if switch was occupied try again
-				continue
-			}
-		}
+
+		t.route[t.routeIndex].userTrain <- t
+		<-t.route[t.routeIndex].readyToGo
 	}
 }
 
@@ -157,10 +116,6 @@ type BasicRail interface {
 	waitTime(train *Train) float64
 	// String returns string representation of rail
 	String() string
-	// tryLock tries to lock rail, returns boolean that tells if it was successful
-	tryLock() bool
-	// unlock unlocks rail for next train
-	unlock()
 }
 
 // Rail is basic rail for transport
@@ -168,21 +123,24 @@ type Rail struct {
 	// len - length of rail in km
 	// speedLimit - speed limit on rail in km/h
 	id, len, speedLimit int
-	lock                chan int
+	userTrain           chan *Train
+	readyToGo           chan bool
 }
 
 // Platform is rail on platform or in depot
 type Platform struct {
 	// stopTime - minimum stop time on platform in minutes
 	id, stopTime int
-	lock         chan int
+	userTrain    chan *Train
+	readyToGo    chan bool
 }
 
 // Switch connects rails and enables train to move from one to another
 type Switch struct {
 	// rotationTime - time that is needed to rotate train on Switch in minutes
 	id, rotationTime int
-	lock             chan int
+	userTrain        chan *Train
+	readyToGo        chan bool
 }
 
 func (r *Rail) waitTime(train *Train) float64 {
@@ -194,35 +152,6 @@ func (p *Platform) waitTime(train *Train) float64 {
 func (s *Switch) waitTime(train *Train) float64 {
 	return float64(s.rotationTime) / 60.0
 }
-
-func (r *Rail) tryLock() bool {
-	select {
-	case <-r.lock:
-		return true
-	default:
-		return false
-	}
-}
-func (p *Platform) tryLock() bool {
-	select {
-	case <-p.lock:
-		return true
-	default:
-		return false
-	}
-}
-func (s *Switch) tryLock() bool {
-	select {
-	case <-s.lock:
-		return true
-	default:
-		return false
-	}
-}
-
-func (r *Rail) unlock()     { r.lock <- 1 }
-func (p *Platform) unlock() { p.lock <- 1 }
-func (s *Switch) unlock()   { s.lock <- 1 }
 
 func (r *Rail) String() string     { return "Rail" + strconv.Itoa(r.id) }
 func (p *Platform) String() string { return "Platform" + strconv.Itoa(p.id) }
@@ -339,10 +268,42 @@ func main() {
 		fields = strings.Fields(line)
 
 		id, _ := strconv.Atoi(fields[0])
-		time, _ := strconv.Atoi(fields[1])
+		rTime, _ := strconv.Atoi(fields[1])
 
-		switches[i] = &Switch{id: id, rotationTime: time, lock: make(chan int, 1)}
-		switches[i].lock <- 1
+		switches[i] = &Switch{
+			id:           id,
+			rotationTime: rTime,
+			userTrain:    make(chan *Train),
+			readyToGo:    make(chan bool)}
+
+		go func(s *Switch) {
+			for {
+				t := <-s.userTrain
+				// if we got lock
+				// unlock last position
+				t.offTrack <- true
+				// get current time
+				currTime := simulationNow()
+				writeStat(fmt.Sprintf("%s %s leaves %s\n", currTime, t.String(), t.position.String()))
+				// move train to new position (switch)
+				t.position = t.route[t.routeIndex]
+				writeStat(fmt.Sprintf("%s %s enters %s\n", currTime, t.String(), t.position.String()))
+				// calculate time we have to wait
+				waitTime := t.position.waitTime(t)
+				if printInformation {
+					fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
+						currTime,
+						t.String(),
+						t.position.String(),
+						waitTime)
+				}
+				// pause goroutine for calculated time
+				time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
+
+				s.readyToGo <- true
+				<-t.offTrack
+			}
+		}(switches[i])
 	}
 	// scan file for platforms, create and save them in railway
 	for i := 0; i < p; i++ {
@@ -351,15 +312,47 @@ func main() {
 		fields = strings.Fields(line)
 
 		id, _ := strconv.Atoi(fields[0])
-		time, _ := strconv.Atoi(fields[1])
+		sTime, _ := strconv.Atoi(fields[1])
 		from, _ := strconv.Atoi(fields[2])
 		to, _ := strconv.Atoi(fields[3])
 
-		platform := &Platform{id: id, stopTime: time, lock: make(chan int, 1)}
-		platform.lock <- 1
+		platform := &Platform{
+			id:        id,
+			stopTime:  sTime,
+			userTrain: make(chan *Train),
+			readyToGo: make(chan bool)}
 
 		railway[from][to] = append(railway[from][to], platform)
 		railway[to][from] = append(railway[to][from], platform)
+
+		go func(p *Platform) {
+			for {
+				t := <-p.userTrain
+				// if we got lock
+				// unlock last position
+				t.offTrack <- true
+				// get current time
+				currTime := simulationNow()
+				writeStat(fmt.Sprintf("%s %s leaves %s\n", currTime, t.String(), t.position.String()))
+				// move train to new position (switch)
+				t.position = p
+				writeStat(fmt.Sprintf("%s %s enters %s\n", currTime, t.String(), t.position.String()))
+				// calculate time we have to wait
+				waitTime := t.position.waitTime(t)
+				if printInformation {
+					fmt.Printf("%s\t%s is on %s for next %.2fh\n",
+						currTime,
+						t.String(),
+						t.position.String(),
+						waitTime)
+				}
+				// pause goroutine for calculated time
+				time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
+
+				p.readyToGo <- true
+				<-t.offTrack
+			}
+		}(platform)
 	}
 
 	// scan file for rails, create and save them in railway
@@ -374,11 +367,44 @@ func main() {
 		from, _ := strconv.Atoi(fields[3])
 		to, _ := strconv.Atoi(fields[4])
 
-		rail := &Rail{id: id, len: len, speedLimit: speed, lock: make(chan int, 1)}
-		rail.lock <- 1
+		rail := &Rail{
+			id:         id,
+			len:        len,
+			speedLimit: speed,
+			userTrain:  make(chan *Train),
+			readyToGo:  make(chan bool)}
 
 		railway[from][to] = append(railway[from][to], rail)
 		railway[to][from] = append(railway[to][from], rail)
+
+		go func(r *Rail) {
+			for {
+				t := <-r.userTrain
+				// if we got lock
+				// unlock last position
+				t.offTrack <- true
+				// get current time
+				currTime := simulationNow()
+				writeStat(fmt.Sprintf("%s %s leaves %s\n", currTime, t.String(), t.position.String()))
+				// move train to new position (switch)
+				t.position = r
+				writeStat(fmt.Sprintf("%s %s enters %s\n", currTime, t.String(), t.position.String()))
+				// calculate time we have to wait
+				waitTime := t.position.waitTime(t)
+				if printInformation {
+					fmt.Printf("%s\t%s is on %s for next %.2fh\n",
+						currTime,
+						t.String(),
+						t.position.String(),
+						waitTime)
+				}
+				// pause goroutine for calculated time
+				time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
+
+				r.readyToGo <- true
+				<-t.offTrack
+			}
+		}(rail)
 	}
 
 	// create WaitGroup that will make sure program will not end before trains stop (which they never do)
@@ -396,7 +422,7 @@ func main() {
 		capacity, _ := strconv.Atoi(fields[2])
 		routeLen, _ := strconv.Atoi(fields[3])
 
-		trains[i] = &Train{id, speed, capacity, make([]*Switch, routeLen), 0, nil}
+		trains[i] = &Train{id, speed, capacity, make([]*Switch, routeLen), 0, nil, make(chan bool)}
 
 		scanner.Scan()
 		line = scanner.Text()
