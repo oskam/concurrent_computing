@@ -208,7 +208,7 @@ Loop1:
 		for i := range *railway {
 			// try to reserve every rail and platform but broken one
 		Loop:
-			for j := range (*railway)[i] {
+			for j := 0; j <= i; j++ {
 				for _, br := range (*railway)[i][j] {
 					if br == broken {
 						// skip if it is broken
@@ -693,7 +693,7 @@ func main() {
 	p, _ := strconv.Atoi(fields[1])
 	// r - number of Rails defined
 	r, _ := strconv.Atoi(fields[2])
-	// rt - number of RepairTrains definec
+	// rt - number of RepairTrains defined
 	rt, _ := strconv.Atoi(fields[3])
 	// t - number of Trains defined
 	t, _ := strconv.Atoi(fields[4])
@@ -920,8 +920,8 @@ func main() {
 					// wait until train leaves
 					<-t.offRail
 
-					// with probability of 0.5% break (if repair train is ready)
-					if 0.005 > rand.Float64() {
+					// with probability of 1% break (if repair train is ready)
+					if 0.01 > rand.Float64() {
 						select {
 						case *repairRequest <- p:
 							// when repair train can accept request
@@ -1046,8 +1046,8 @@ func main() {
 					// wait until train leaves
 					<-t.offRail
 
-					// with probability of 0.5% break (if repair train is ready)
-					if 0.005 > rand.Float64() {
+					// with probability of 1% break (if repair train is ready)
+					if 0.01 > rand.Float64() {
 						select {
 						case *repairRequest <- r:
 							// when repair train can accept request
@@ -1119,7 +1119,7 @@ func main() {
 			maxSpeed: speed,
 			depot: &Platform{ // create depot platform that is not saved in connections graph
 				id:              p,
-				stopTime:        230,
+				stopTime:        30,
 				repairDuration:  0,
 				connects:        []BasicRail{switches[start]},
 				userTrain:       make(chan *Train),
