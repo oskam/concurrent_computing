@@ -1076,7 +1076,7 @@ func main() {
 						// calculate time we have to wait
 						waitTime := r.waitTime(rt)
 						if printInformation {
-							fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
+							fmt.Printf("%s\t%s is on %s for next %.2fh\n",
 								simulationNow(),
 								rt.String(),
 								r.String(),
