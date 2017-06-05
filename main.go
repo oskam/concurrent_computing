@@ -21,6 +21,10 @@ type Train struct {
 	route                                  []*Switch
 	routeIndex                             int
 	position                               BasicRail // rail on which train travels or stations
+	stops                                  []*Station
+	passengers                             []*Worker
+	pendingPassengers                      map[*Station][]*Worker
+	pendingLock                            sync.Mutex
 	offRail                                chan bool // holds true when train changes rail to free previous
 	repaired                               chan bool // holds true when train got repaired after break
 }
@@ -54,7 +58,7 @@ func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, repairRequest
 		// get id of switch that is after the rail we have to get on
 		to := t.route[(t.routeIndex+1)%len(t.route)].id
 	FindRail:
-		// loop until we find free rail to move onto
+	// loop until we find free rail to move onto
 		for {
 			// loop all rails between switches got above
 			for _, r := range (*railway)[from][to] {
@@ -323,7 +327,7 @@ Loop1:
 				// get switches that platform connects
 				neighbors := p.connections()
 			FindPlatform:
-				// loop until we find free platform to move onto
+			// loop until we find free platform to move onto
 				for {
 					// try every platform between neighbor switches
 					for _, p := range (*railway)[neighbors[0].Id()][neighbors[1].Id()] {
@@ -343,7 +347,7 @@ Loop1:
 				// get switches that rail connects
 				neighbors := r.connections()
 			FindRail:
-				// loop until we find free rail to move onto
+			// loop until we find free rail to move onto
 				for {
 					// try every rail between neighbor switches
 					for _, r := range (*railway)[neighbors[0].Id()][neighbors[1].Id()] {
@@ -436,6 +440,7 @@ type Platform struct {
 	suspended                    chan bool         // informs rail that it should suspend work
 	released                     chan bool         // informs about suspension release
 	reservation                  chan bool         // holds true when rail was successfully reserved
+	station                      *Station
 }
 
 // Switch connects rails and enables train to move from one to another
@@ -582,6 +587,130 @@ func (r *Rail) String() string     { return "Rail" + strconv.Itoa(r.id) }
 func (p *Platform) String() string { return "Platform" + strconv.Itoa(p.id) }
 func (s *Switch) String() string   { return "Switch" + strconv.Itoa(s.id) }
 
+// Ticket type represents planned workers travel
+type Ticket struct {
+	train *Train
+	from  *Station
+	to    *Station
+}
+
+// Task type represents job that workers have to do,
+// it is stateful goroutine that waits for all workers presence
+// before letting them know that they can do the task
+type Task struct {
+	location *Station
+	time     int
+	workers  map[*Worker]bool
+	arrived  chan *Worker // channel on which workers report their presence
+}
+
+// Run is mai Task function, that waits for all workers and then informs them to start work
+func (t *Task) Run(workers []*Worker) {
+	// set all presence to false and notify workers about new task
+	for _, w := range workers {
+		t.workers[w] = false
+		w.newTask <- t
+	}
+	// wait for workers
+	for {
+	Select:
+		select {
+		case worker := <-t.arrived:
+			t.workers[worker] = true
+
+			for _, ready := range t.workers {
+				// if at least one worker is not ready, wait for next arrival
+				if !ready {
+					break Select
+				}
+			}
+			// if all workers arrived, notify them
+			for w := range t.workers {
+				w.readyToWork <- true
+			}
+			// task done its job, it can return
+			return
+		}
+	}
+}
+
+func (t *Task) taskTime() float64 {
+	return float64(t.time) / 60.0
+}
+
+// Worker type represents railway worker that will wait for tasks,
+// travel to their location, work and then return home
+type Worker struct {
+	id          int
+	home        *Station
+	position    *Station
+	ticket      *Ticket
+	task        *Task
+	arrived     chan bool
+	readyToWork chan bool
+	newTask     chan *Task
+}
+// doTask locks until all Task workers are present, than waits for task time
+func (w *Worker) doTask() {
+	w.task.arrived <- w
+	<-w.readyToWork
+
+	if printInformation {
+		fmt.Printf("%s\t%s is doing task at %s\n",
+			simulationNow(),
+			w.String(),
+			w.task.location)
+	}
+
+	workTime := w.task.taskTime()
+	time.Sleep(time.Duration(workTime*float64(secondsInHour)) * time.Second)
+
+	if printInformation {
+		fmt.Printf("%s\t%s ended task at %s\n",
+			simulationNow(),
+			w.String(),
+			w.task.location)
+	}
+
+	w.task = nil
+}
+// getTicket simulates ticket purchase and locks until worker arrives at destination station
+func (w *Worker) getTicket(train *Train, to *Station) {
+	// get ticket
+	w.ticket = &Ticket{
+		train: train,
+		from:  w.position,
+		to:    to}
+	// add it to train's tickets for departing station
+	train.pendingLock.Lock()
+	train.pendingPassengers[w.home] = append(train.pendingPassengers[w.home], w)
+	train.pendingLock.Unlock()
+
+	if printInformation {
+		fmt.Printf("%s\t%s got ticket to %s for %s\n",
+			simulationNow(),
+			w.String(),
+			to.String(),
+			train.String())
+	}
+	// lock until arrived
+	<-w.arrived
+}
+
+func (w *Worker) String() string { return fmt.Sprintf("Worker%d(%s)", w.id, w.home) }
+
+// Station type represents station that have couple of platform, trains arriving at it and workers living here
+type Station struct {
+	id             int
+	platforms      []*Platform
+	inhabitants    []*Worker
+	operatedTrains []*Train
+}
+
+func (s *Station) String() string {
+	return fmt.Sprintf("Station%d", s.id)
+}
+
 // simulates clock in simulation time in format HH:MM
 func simulationNow() string {
 	// get duration from simulation start
@@ -656,6 +785,7 @@ var filename string
 
 func main() {
 	startTime = time.Now()
+	rand.Seed(startTime.UnixNano())
 
 	if len(os.Args) != 3 {
 		fmt.Println("need 2 arguments: <input filename [string]> <printInformation [bool]>")
@@ -697,16 +827,20 @@ func main() {
 	rt, _ := strconv.Atoi(fields[3])
 	// t - number of Trains defined
 	t, _ := strconv.Atoi(fields[4])
+	// w - number of Workers defined
+	w, _ := strconv.Atoi(fields[5])
 	// hour - number of seconds for hour simulation
-	hour, _ := strconv.Atoi(fields[5])
+	hour, _ := strconv.Atoi(fields[6])
 
 	secondsInHour = hour
 	toRepairRequest = make(chan interface{})
 
-	// create arrays of pointers to switches, repair trains and trains
+	// create arrays of pointers to switches, repair trains and trains, stations and workers
 	switches := make([]*Switch, s)
 	repairTrains := make([]*RepairTrain, rt)
 	trains := make([]*Train, t)
+	stations := make([]*Station, 0)
+	workers := make([]*Worker, w)
 
 	// create 3 dimensional array to keep railway graph represented by edges
 	// connecting switches with id's of coordinates
@@ -778,13 +912,13 @@ func main() {
 					writeStat(fmt.Sprintf("%s %s enters %s\n", currTime, t.String(), t.position.String()))
 					// calculate time we have to wait
 					waitTime := t.position.waitTime(t)
-					if printInformation {
-						fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
-							currTime,
-							t.String(),
-							t.position.String(),
-							waitTime)
-					}
+					//if printInformation {
+					//	fmt.Printf("%s\t%s is rotating on %s for next %.2fh\n",
+					//		currTime,
+					//		t.String(),
+					//		t.position.String(),
+					//		waitTime)
+					//}
 					// pause goroutine for calculated time
 					time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
 
@@ -864,10 +998,37 @@ func main() {
 			repaired:        make(chan bool),
 			suspended:       make(chan bool),
 			released:        make(chan bool),
-			reservation:     make(chan bool, 1)}
+			reservation:     make(chan bool, 1),
+			station:         nil}
 
 		railway[from][to] = append(railway[from][to], platform)
 		railway[to][from] = append(railway[to][from], platform)
+
+		// check if station that this platform belongs to exists
+		for _, r := range railway[from][to] {
+			switch r.(type) {
+			case *Platform:
+				p := r.(*Platform)
+				if p.station != nil {
+					// append platform to station
+					p.station.platforms = append(p.station.platforms, platform)
+					platform.station = p.station
+					goto Found
+				}
+			default:
+				continue
+			}
+		}
+
+		// if no station was found, create one
+		platform.station = &Station{
+			id:             len(stations),
+			platforms:      []*Platform{platform},
+			inhabitants:    make([]*Worker, 0),
+			operatedTrains: make([]*Train, 0)}
+		stations = append(stations, platform.station)
+
+	Found:
 
 		go func(p *Platform, repairRequest *chan interface{}) {
 			for {
@@ -912,6 +1073,73 @@ func main() {
 							t.position.String(),
 							waitTime)
 					}
+
+					// array for saving passengers that left
+					leaving := make([]*Worker, 0)
+					// for every passenger in train
+					for _, w := range t.passengers {
+						ticket := w.ticket
+						// if it's destination
+						if ticket.to == p.station {
+							// save leaving passenger
+							leaving = append(leaving, w)
+							if printInformation {
+								var format string
+								if w.home == p.station {
+									format = "%s\t%s leaves %s at %s and returns to home\n"
+								} else {
+									format = "%s\t%s leaves %s at %s\n"
+								}
+								fmt.Printf(format,
+									simulationNow(),
+									w.String(),
+									t,
+									p.station)
+							}
+							// leave train
+							w.position = p.station
+							w.ticket = nil
+							w.arrived <- true
+						}
+					}
+					// delete every passenger that left the train from array
+					for _, w := range leaving {
+						for i, p := range t.passengers {
+							if w == p {
+								t.passengers = append(t.passengers[:i], t.passengers[i+1:]...)
+								break
+							}
+						}
+					}
+
+					// last passenger that got to train index
+					var lastPassenger int
+					// for every pending passenger on the station
+					for i, w := range t.pendingPassengers[p.station] {
+						// if there are free places in train
+						if t.capacity > len(t.passengers) {
+							lastPassenger = i
+							if printInformation {
+								fmt.Printf("%s\t%s gets on %s at %s\n",
+									simulationNow(),
+									w.String(),
+									t,
+									p.station)
+							}
+							// let passenger in
+							t.passengers = append(t.passengers, w)
+							w.position = nil
+						} else {
+							break
+						}
+					}
+					// cut pending passengers array
+					if lastPassenger < len(t.pendingPassengers[p.station])-1 {
+						t.pendingPassengers[p.station] = t.pendingPassengers[p.station][lastPassenger+1:]
+					} else {
+						t.pendingPassengers[p.station] = make([]*Worker, 0)
+					}
+
 					// pause goroutine for calculated time
 					time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
 
@@ -1031,13 +1259,13 @@ func main() {
 					t.position = r
 					// calculate time we have to wait
 					waitTime := t.position.waitTime(t)
-					if printInformation {
-						fmt.Printf("%s\t%s is on %s for next %.2fh\n",
-							simulationNow(),
-							t.String(),
-							t.position.String(),
-							waitTime)
-					}
+					//if printInformation {
+					//	fmt.Printf("%s\t%s is on %s for next %.2fh\n",
+					//		simulationNow(),
+					//		t.String(),
+					//		t.position.String(),
+					//		waitTime)
+					//}
 					// pause goroutine for calculated time
 					time.Sleep(time.Duration(waitTime*float64(secondsInHour)) * time.Second)
 
@@ -1147,7 +1375,7 @@ func main() {
 			}
 		}(repairTrains[i].depot, &toRepairRequest)
 
-		go repairTrains[i].Run(&switches, &railway)
+		//go repairTrains[i].Run(&switches, &railway)
 	}
 
 	// create WaitGroup that will make sure program will not end before trains stop (which they never do)
@@ -1167,13 +1395,16 @@ func main() {
 		routeLen, _ := strconv.Atoi(fields[4])
 
 		trains[i] = &Train{
-			id:             id,
-			maxSpeed:       speed,
-			capacity:       capacity,
-			repairDuration: repDur,
-			route:          make([]*Switch, routeLen),
-			offRail:        make(chan bool),
-			repaired:       make(chan bool)}
+			id:                id,
+			maxSpeed:          speed,
+			capacity:          capacity,
+			repairDuration:    repDur,
+			route:             make([]*Switch, routeLen),
+			stops:             make([]*Station, 0),
+			passengers:        make([]*Worker, 0),
+			pendingPassengers: make(map[*Station][]*Worker, 0),
+			offRail:           make(chan bool),
+			repaired:          make(chan bool)}
 
 		scanner.Scan()
 		line = scanner.Text()
@@ -1184,10 +1415,159 @@ func main() {
 			index, _ := strconv.Atoi(fields[j])
 
 			trains[i].route[j] = switches[index]
+			for _, station := range stations {
+				if station.platforms[0].connects[0] == trains[i].route[j] {
+					trains[i].stops = append(trains[i].stops, station)
+					station.operatedTrains = append(station.operatedTrains, trains[i])
+					trains[i].pendingPassengers[station] = make([]*Worker, 0)
+				}
+			}
+		}
+	}
+
+	// scan file for workers
+	for i := 0; i < w; i++ {
+		scanner.Scan()
+		line = scanner.Text()
+		fields = strings.Fields(line)
+
+		id, _ := strconv.Atoi(fields[0])
+		platformId, _ := strconv.Atoi(fields[1])
+
+		var home *Station
+		// find station with home platform
+	Loop:
+		for _, s := range stations {
+			for _, p := range s.platforms {
+				if p.id == platformId {
+					home = p.station
+					break Loop
+				}
+			}
 		}
 
+		workers[i] = &Worker{
+			id:          id,
+			home:        home,
+			position:    home,
+			arrived:     make(chan bool),
+			readyToWork: make(chan bool),
+			newTask:     make(chan *Task)}
+		// add worker to station inhabitants
+		home.inhabitants = append(home.inhabitants, workers[i])
+
+		go func(w *Worker) {
+			for {
+			Wait:
+			// wait for task
+				w.task = <-w.newTask
+				if printInformation {
+					fmt.Printf("%s\t%s got task at %s\n",
+						simulationNow(),
+						w.String(),
+						w.task.location)
+				}
+
+				if w.task.location == w.home {
+					// if task is at home, just do it
+					w.doTask()
+				} else {
+					// look for connection to task location
+					departingTrains := w.home.operatedTrains
+					arrivingTrains := w.task.location.operatedTrains
+
+					// check if there is direct connection
+					for _, d := range departingTrains {
+						for _, a := range arrivingTrains {
+							if d == a {
+								w.getTicket(d, w.task.location)
+								w.doTask()
+								w.getTicket(a, w.home)
+
+								// wait for next task
+								goto Wait
+							}
+						}
+					}
+
+					// if no direct connection was found travel with change
+					for _, d := range departingTrains {
+						for _, sd := range d.stops {
+							for _, a := range arrivingTrains {
+								for _, sa := range a.stops {
+									if sd == sa {
+										w.getTicket(d, sd)
+										// change at station sd (==sa)
+										w.getTicket(a, w.task.location)
+										w.doTask()
+										w.getTicket(a, sa)
+										// change at station sa (==sd)
+										w.getTicket(d, w.home)
+
+										// wait for next task
+										goto Wait
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}(workers[i])
+	}
+
+	// print railway stations with their workers and platforms
+	if printInformation {
+		for _, s := range stations {
+			fmt.Printf("%s:\n", s)
+			for _, p := range s.platforms {
+				fmt.Printf("\t%s\n", p)
+			}
+			for _, w := range s.inhabitants {
+				fmt.Printf("\t%s\n", w)
+			}
+		}
+	}
+
+	// when workers are ready, run trains
+	for i := 0; i < t; i++ {
 		go trains[i].Run(&switches, &railway, &toRepairRequest, waitGroup)
 	}
+
+	// task dispatcher
+	go func() {
+		for {
+			// every 4 hours create new task
+			time.Sleep(time.Duration(4*secondsInHour) * time.Second)
+
+			var assignedWorkers []*Worker
+			var time = 30 + rand.Intn(31) // task time is 30-60 minutes
+			var location = stations[rand.Intn(len(stations))] // random location
+
+		FindWorkers:
+		// assign from 1 worker to 1/3 of all workers
+			for _, i := range rand.Perm(len(workers))[:1+rand.Intn(len(workers)/3)] {
+				assignedWorkers = append(assignedWorkers, workers[i])
+			}
+
+			for _, w := range assignedWorkers {
+				if w.position != w.home || w.task != nil {
+					// if any of assigned workers is not available, try to find others
+					goto FindWorkers
+				}
+			}
+
+			// create task
+			task := &Task{
+				location: location,
+				time:     time,
+				workers:  make(map[*Worker]bool, 0),
+				arrived:  make(chan *Worker)}
+
+			// run task main function
+			go task.Run(assignedWorkers)
+		}
+	}()
 
 	// if program is in silent mode, run goroutine with informant
 	if !printInformation {

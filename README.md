@@ -18,24 +18,25 @@ case "0", "f", "F", "false", "FALSE", "False":
 # PLIK KONFIGURACYJNY #
 
 W kolejnych liniach pliku tekstowego znajdują się:
-- podstawowe dane w formacie `s p r rt t h`, gdzie:
+- podstawowe dane w formacie `s p r rt t w h`, gdzie:
     - `s`: ilość zwrotnic
     - `p`: ilość peronów
     - `r`: ilość torów
     - `rt`: ilość pociągów naprawczych
     - `t`: ilość pociągów
+    - `w`: ilość pracowników
     - `h`: ile rzeczywistych _sekund_ trwa godzina symulacji
-- `s` opisów kolejnych zwrotnic w formacie `id min`, gdzie:
+- `s` opisów kolejnych zwrotnic w formacie `id min rep`, gdzie:
     - `id`: identyfikator zwrotnicy, indeksując od __0__
     - `min`: minimalny czas użycia zwrotnicy w _minutach_
     - `rep`: czas jaki pociągowi naprawczemu zajmuje naprawa zwrotnicy
-- `p` opisów kolejnych peronów w formacie `id min from to`, gdzie:
+- `p` opisów kolejnych peronów w formacie `id min from to rep`, gdzie:
     - `id`: identyfikator peronu
     - `min`: minimalny czas postoju w _minutach_
     - `from`: identyfikator zwrotnicy, od której biegnie peron
     - `to`: identyfikator zwrotnicy, do której biegnie peron
     - `rep`: czas jaki pociągowi naprawczemu zajmuje naprawa peronu
-- `r` opisów kolejnych torów w formacie `id len speed from to`, gdzie:
+- `r` opisów kolejnych torów w formacie `id len speed from to rep`, gdzie:
     - `id`: identyfikator toru
     - `len`: długość toru w _km_
     - `speed`: maksymalna prędkość pociągów na torze w _km/h_
@@ -54,7 +55,9 @@ W kolejnych liniach pliku tekstowego znajdują się:
         - `rep`: czas jaki pociągowi naprawczemu zajmuje naprawa pociągu
         - `len`: długość trasy, tj. liczba zwrotnic w cyklu
     - druga linia zawierająca listę `len` identyfikatorów zwrotnic, tworzących cykl, oddzielonych spacjami
-
+- `w` opisów pracowników w formacie `id platform`, gdzie:
+    - `id`: identyfikator pracownika
+    - `platform`: platforma, która znajduje się przy domowej stacji pracownika
 
 > __UWAGA 1:__ Indeksy zwrotnic muszą być kolejnymi liczbami całkowitymi od __0__, są używane jako indeksy w macierzy.
 
@@ -74,4 +77,7 @@ W kolejnych liniach pliku tekstowego znajdują się:
 0 150 1
 0 100 250 50 3
 1 0 2
+0 0
+1 0
+2 1
 ```
