@@ -58,7 +58,7 @@ func (t *Train) Run(switches *[]*Switch, railway *[][][]BasicRail, repairRequest
 		// get id of switch that is after the rail we have to get on
 		to := t.route[(t.routeIndex+1)%len(t.route)].id
 	FindRail:
-	// loop until we find free rail to move onto
+		// loop until we find free rail to move onto
 		for {
 			// loop all rails between switches got above
 			for _, r := range (*railway)[from][to] {
@@ -327,7 +327,7 @@ Loop1:
 				// get switches that platform connects
 				neighbors := p.connections()
 			FindPlatform:
-			// loop until we find free platform to move onto
+				// loop until we find free platform to move onto
 				for {
 					// try every platform between neighbor switches
 					for _, p := range (*railway)[neighbors[0].Id()][neighbors[1].Id()] {
@@ -347,7 +347,7 @@ Loop1:
 				// get switches that rail connects
 				neighbors := r.connections()
 			FindRail:
-			// loop until we find free rail to move onto
+				// loop until we find free rail to move onto
 				for {
 					// try every rail between neighbor switches
 					for _, r := range (*railway)[neighbors[0].Id()][neighbors[1].Id()] {
@@ -683,7 +683,7 @@ func (w *Worker) getTicket(train *Train, to *Station) {
 		to:    to}
 	// add it to train's tickets for departing station
 	train.pendingLock.Lock()
-	train.pendingPassengers[w.home] = append(train.pendingPassengers[w.home], w)
+	train.pendingPassengers[w.position] = append(train.pendingPassengers[w.position], w)
 	train.pendingLock.Unlock()
 
 	if printInformation {
@@ -1415,16 +1415,35 @@ func main() {
 			index, _ := strconv.Atoi(fields[j])
 
 			trains[i].route[j] = switches[index]
+		}
+
+		lastSwitch := trains[i].route[routeLen-1]
+		for j:= 0; j < routeLen; j++ {
+			nextSwitch := trains[i].route[j]
+		CheckStations:
 			for _, station := range stations {
-				if station.platforms[0].connects[0] == trains[i].route[j] {
+				connects := station.platforms[0].connects
+				if (
+					connects[0] == lastSwitch &&
+					connects[1] == nextSwitch) ||
+					(
+					connects[1] == lastSwitch &&
+					connects[0] == nextSwitch) {
+					for _, stop := range trains[i].stops {
+						if stop == station {
+							break CheckStations
+						}
+					}
 					trains[i].stops = append(trains[i].stops, station)
 					station.operatedTrains = append(station.operatedTrains, trains[i])
 					trains[i].pendingPassengers[station] = make([]*Worker, 0)
+					break CheckStations
 				}
 			}
+			lastSwitch = nextSwitch
 		}
 	}
-
+	
 	// scan file for workers
 	for i := 0; i < w; i++ {
 		scanner.Scan()
@@ -1483,7 +1502,7 @@ func main() {
 								w.getTicket(d, w.task.location)
 								w.doTask()
 								w.getTicket(a, w.home)
-
+								
 								// wait for next task
 								goto Wait
 							}
@@ -1503,7 +1522,7 @@ func main() {
 										w.getTicket(a, sa)
 										// change at station sa (==sd)
 										w.getTicket(d, w.home)
-
+										
 										// wait for next task
 										goto Wait
 									}
@@ -1526,6 +1545,9 @@ func main() {
 			for _, w := range s.inhabitants {
 				fmt.Printf("\t%s\n", w)
 			}
+			for _, t := range s.operatedTrains {
+				fmt.Printf("\t%s\n", t)
+			}
 		}
 	}
 
@@ -1539,28 +1561,29 @@ func main() {
 		for {
 			// every 4 hours create new task
 			time.Sleep(time.Duration(4*secondsInHour) * time.Second)
-
-			var assignedWorkers []*Worker
-			var time = 30 + rand.Intn(31) // task time is 30-60 minutes
-			var location = stations[rand.Intn(len(stations))] // random location
-
-		FindWorkers:
-		// assign from 1 worker to 1/3 of all workers
+			
+			taskTime := 30 + rand.Intn(31) // task time is 30-60 minutes
+			location := stations[rand.Intn(len(stations))] // random location
+			assignedWorkers := make([]*Worker, 0)
+			
+			// assign from 1 worker to 1/3 of all workers
 			for _, i := range rand.Perm(len(workers))[:1+rand.Intn(len(workers)/3)] {
 				assignedWorkers = append(assignedWorkers, workers[i])
 			}
-
+			
+		CheckWorkers:
 			for _, w := range assignedWorkers {
 				if w.position != w.home || w.task != nil {
-					// if any of assigned workers is not available, try to find others
-					goto FindWorkers
+					// if any of assigned workers is not available, wait 2 hours
+					time.Sleep(time.Duration(2*secondsInHour) * time.Second)
+					goto CheckWorkers
 				}
 			}
 
 			// create task
 			task := &Task{
 				location: location,
-				time:     time,
+				time:     taskTime,
 				workers:  make(map[*Worker]bool, 0),
 				arrived:  make(chan *Worker)}
 
